@@ -22,10 +22,9 @@ go/
 │   └── printer/         # Core thermal printer logic
 ├── cmd/
 │   ├── mptprinter-cli/  # Full-featured command-line interface
-│   └── mptprint/        # Simple print tool for basic usage
-├── bin/                 # Built executables (after running build script)
-├── build.sh             # Build script for Linux/Mac
-├── build.bat            # Build script for Windows
+│   ├── mptprint/        # Simple print tool for basic usage
+│   └── mpt-markdown/    # Print Markdown files with simple formatting
+├── bin/                 # Built executables (after running make)
 └── go.mod               # Go module definition
 ```
 
@@ -44,21 +43,16 @@ go/
 ## Building
 
 ```bash
-cd go/
-
 # Download dependencies
 go mod tidy
 
-# Build both CLI tools (Linux/Mac)
-chmod +x build.sh
-./build.sh
-
-# Or on Windows
-build.bat
+# Build all tools using Makefile
+make            # builds mptprinter-cli, mptprint, mpt-markdown
 
 # Or build manually
 go build -o bin/mptprinter-cli ./cmd/mptprinter-cli  # Full-featured CLI
 go build -o bin/mptprint ./cmd/mptprint              # Simple print tool
+go build -o bin/mpt-markdown ./cmd/mpt-markdown      # Markdown printer
 ```
 
 ## Usage
@@ -148,6 +142,24 @@ func main() {
     thermalPrinter.Feed(2)
 }
 ```
+
+### 📝 Markdown Printer (`mpt-markdown`)
+
+Render and print a Markdown file using ESC/POS formatting:
+
+```bash
+./bin/mpt-markdown README.md         # default 32 columns (58mm)
+./bin/mpt-markdown -width 42 doc.md  # wider paper (80mm printers)
+./bin/mpt-markdown -cut doc.md       # cut after printing
+```
+Supported Markdown subset:
+- Headings (#, ##, ### and setext underlines) mapped to bold/size and centered
+- Bold/italic/combined (uses bold + underline)
+- Horizontal rules (---, ***, ___)
+- Lists (unordered -, +, * and ordered 1.) with basic wrapping
+- Blockquotes (prefixed with | and underlined)
+- Code blocks (indented)
+- Links and images printed as text with URL
 
 ## Library Comparison
 
