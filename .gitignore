@@ -17,6 +17,8 @@
 # Go workspace file
 go.work
 
+*.code-workspace
+
 # Built binaries directory
 bin/
 dist/
