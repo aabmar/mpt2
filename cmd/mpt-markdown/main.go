@@ -28,6 +28,7 @@ func main() {
 	width := flag.Int("width", 32, "Line width in characters (e.g., 32 for 58mm)")
 	feed := flag.Int("feed", 2, "Number of lines to feed after printing")
 	cut := flag.Bool("cut", false, "Cut paper after printing")
+	codepage := flag.Int("codepage", -1, "ESC/POS code page (0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 	help := flag.Bool("help", false, "Show help")
 	flag.Parse()
 
@@ -61,6 +62,9 @@ func main() {
 	}
 	defer p.Disconnect()
 
+	if *codepage >= 0 && *codepage <= 255 {
+		p.SetCodePage(byte(*codepage))
+	}
 	if err := p.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to initialize printer: %v\n", err)
 		os.Exit(1)
@@ -91,6 +95,7 @@ func usage() {
 	fmt.Println("  -width N   Line width (characters), default 32")
 	fmt.Println("  -feed N    Lines to feed after print, default 2")
 	fmt.Println("  -cut       Cut paper after printing")
+	fmt.Println("  -codepage  ESC/POS code page (0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 }
 
 // PrintMarkdown parses and prints a subset of original Markdown.

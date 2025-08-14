@@ -9,6 +9,7 @@ BIN_DIR := bin
 CLI := $(BIN_DIR)/mptprinter-cli$(EXE)
 PRINT := $(BIN_DIR)/mptprint$(EXE)
 MARKDOWN := $(BIN_DIR)/mpt-markdown$(EXE)
+BLESEARCH := $(BIN_DIR)/ble-search$(EXE)
 
 .PHONY: all clean help
 
@@ -25,7 +26,7 @@ help:
 	@echo "\nFor help:"
 	@echo "  ./bin/mptprinter-cli -help"
 
-all: $(CLI) $(PRINT) $(MARKDOWN)
+all: $(CLI) $(PRINT) $(MARKDOWN) $(BLESEARCH)
 
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
@@ -44,6 +45,11 @@ $(MARKDOWN): $(BIN_DIR)
 	@echo "Building mpt-markdown..."
 	go build -o $(MARKDOWN) ./cmd/mpt-markdown
 	@echo "✓ mpt-markdown built successfully"
+
+$(BLESEARCH): $(BIN_DIR)
+	@echo "Building ble-search..."
+	go build -o $(BLESEARCH) ./cmd/ble-search
+	@echo "✓ ble-search built successfully"
 
 clean:
 	rm -rf $(BIN_DIR)

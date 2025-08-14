@@ -23,6 +23,23 @@ var (
 	ALIGN_RIGHT  = append(ESC, 0x61, 0x02) // ESC a 2 - Right align
 )
 
+// Code page selection: ESC t n
+// Returns the ESC/POS command to select character code table 'n'
+func CodePageCommand(n byte) []byte {
+	return append(append([]byte{}, ESC...), 0x74, n)
+}
+
+// Common code page numbers per ESC/POS (may vary by model):
+// 0: PC437 (USA, Standard Europe)
+// 2: PC850 (Multilingual)
+// 3: PC860 (Portuguese)
+// 4: PC863 (Canadian-French)
+// 5: PC865 (Nordic)
+// 16: WPC1252
+// 17: PC866 (Cyrillic#2)
+// 18: PC852 (Latin 2)
+// 19: PC858 (Euro)
+
 // TextAlign represents text alignment options
 type TextAlign int
 

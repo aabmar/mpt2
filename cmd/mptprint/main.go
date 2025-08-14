@@ -13,6 +13,13 @@ import (
 )
 
 func main() {
+	// Optional: allow code page via env or simple flag-like env var for minimal tool
+	cp := -1
+	if v := os.Getenv("MPT_CODEPAGE"); v != "" {
+		var n int
+		_, _ = fmt.Sscanf(v, "%d", &n)
+		cp = n
+	}
 	// Simple usage: mptprint "text to print"
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: mptprint \"text to print\"")
@@ -45,6 +52,9 @@ func main() {
 
 	// Create printer
 	thermalPrinter := printer.NewThermalPrinter(conn)
+	if cp >= 0 && cp <= 255 {
+		thermalPrinter.SetCodePage(byte(cp))
+	}
 
 	// Connect with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

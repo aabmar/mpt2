@@ -37,6 +37,7 @@ func main() {
 		fromStdin      = flag.Bool("stdin", false, "Read text from stdin instead of -text")
 		separator      = flag.String("separator", "", "Print a separator line with this character")
 		quiet          = flag.Bool("quiet", false, "Suppress log output")
+		codepage       = flag.Int("codepage", -1, "ESC/POS code page number (e.g., 0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 		help           = flag.Bool("help", false, "Show help")
 	)
 
@@ -111,6 +112,9 @@ func main() {
 
 	// Create printer instance
 	thermalPrinter := printer.NewThermalPrinter(conn)
+	if *codepage >= 0 && *codepage <= 255 {
+		thermalPrinter.SetCodePage(byte(*codepage))
+	}
 
 	// Connect to printer
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -357,6 +361,8 @@ func showHelp() {
 	fmt.Println("        Cut paper after printing")
 	fmt.Println("  -quiet")
 	fmt.Println("        Suppress log output")
+	fmt.Println("  -codepage int")
+	fmt.Println("        ESC/POS code page (0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  # Print simple text via USB")
