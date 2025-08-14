@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -30,8 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Suppress log output for simple tool
-	log.SetOutput(os.Stderr)
+	// Simple tool outputs user messages to stderr/stdout via fmt only
 
 	// Get text to print
 	var textToPrint string

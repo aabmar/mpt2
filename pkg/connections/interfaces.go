@@ -40,6 +40,7 @@ type USBConnectionParams struct {
 // BluetoothConnectionParams holds parameters for Bluetooth connections
 type BluetoothConnectionParams struct {
 	Address string // MAC address like "XX:XX:XX:XX:XX:XX"
+	Verbose bool   // Enable verbose BLE logging
 }
 
 // ConnectionFactory creates connections based on type and parameters
@@ -57,5 +58,5 @@ func (f *ConnectionFactory) CreateUSBConnection(params USBConnectionParams) (Con
 
 // CreateBluetoothConnection creates a Bluetooth connection with the given parameters
 func (f *ConnectionFactory) CreateBluetoothConnection(params BluetoothConnectionParams) (Connection, error) {
-	return NewBluetoothConnection(params.Address)
+	return NewBluetoothConnection(params.Address, params.Verbose)
 }

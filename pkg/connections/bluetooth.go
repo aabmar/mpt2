@@ -8,8 +8,15 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"tinygo.org/x/bluetooth"
 )
+
+// session-level cache of MAC -> whether device exposed ESC/POS characteristic during this program run
+var blePrinterCapabilityCache = struct {
+	mu    sync.RWMutex
+	known map[string]bool
+}{known: make(map[string]bool)}
 
 // BluetoothConnection implements Connection interface for Bluetooth LE printers
 type BluetoothConnection struct {
@@ -20,17 +27,13 @@ type BluetoothConnection struct {
 	writeChar *bluetooth.DeviceCharacteristic
 	// candidates holds all matched writable printer characteristics in priority order
 	candidates []*bluetooth.DeviceCharacteristic
+	verbose    bool
 	mutex      sync.RWMutex
 }
 
-// Common service UUIDs for thermal printers
-var (
-	// Generic Access Profile
-	printerServiceUUID = bluetooth.ServiceUUIDGenericAccess
-	// Many thermal printers use a custom service or Nordic UART service
-	nordicUARTServiceUUID, _ = bluetooth.ParseUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-	nordicUARTTxUUID, _      = bluetooth.ParseUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") // Write characteristic
-)
+// Note: Some printers expose Nordic UART or custom services, but we rely on
+// characteristic discovery (see printerWriteCharacteristics) rather than
+// hard-coding service UUIDs. This keeps discovery flexible across vendors.
 
 // Common characteristics used by thermal printers (from Python conversion)
 var printerWriteCharacteristics = []string{
@@ -50,15 +53,16 @@ var printerWriteCharacteristics = []string{
 }
 
 // NewBluetoothConnection creates a new Bluetooth connection
-func NewBluetoothConnection(address string) (*BluetoothConnection, error) {
+func NewBluetoothConnection(address string, verbose bool) (*BluetoothConnection, error) {
 	// Validate MAC address format
-	if !isValidMACAddress(address) {
+	if address != "" && !isValidMACAddress(address) {
 		return nil, fmt.Errorf("invalid MAC address format: %s (expected XX:XX:XX:XX:XX:XX)", address)
 	}
 
 	return &BluetoothConnection{
 		address:   strings.ToUpper(address),
 		connected: false,
+		verbose:   verbose,
 	}, nil
 }
 
@@ -77,13 +81,96 @@ func (b *BluetoothConnection) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to enable Bluetooth adapter: %w", err)
 	}
 
-	// Use scan-based approach only (more reliable on Windows)
+	// Use scan-based approach (more reliable on Windows)
 	return b.connectViaScan(ctx, adapter)
 }
 
 // connectViaScan attempts connection via device discovery
 func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluetooth.Adapter) error {
-	fmt.Printf("Scanning for Bluetooth device %s...\n", b.address)
+	// If no address provided, we auto-scan and pick the first device that exposes the ESC/POS write characteristic.
+	if b.address == "" {
+		if b.verbose {
+			log.Debug("Scanning for BLE printers (no address provided)...")
+		}
+		// We will scan and attempt to connect to devices one by one until we find one exposing the target characteristic.
+		// Record seen MACs to avoid duplicate attempts in this session.
+		seen := map[string]bool{}
+		var selectedDevice *bluetooth.Device
+
+		// Scan and for each discovered device, attempt a quick service/characteristic check.
+		err := adapter.Scan(func(adapter *bluetooth.Adapter, scanResult bluetooth.ScanResult) {
+			mac := scanResult.Address.String()
+			if seen[mac] {
+				return
+			}
+			seen[mac] = true
+
+			// Consult cache: skip devices known not to be printers
+			blePrinterCapabilityCache.mu.RLock()
+			known, ok := blePrinterCapabilityCache.known[mac]
+			blePrinterCapabilityCache.mu.RUnlock()
+			if ok && !known {
+				if b.verbose {
+					log.WithField("mac", mac).Debug("Skipping device (cached as non-printer)")
+				}
+				return
+			}
+			if b.verbose {
+				name := scanResult.LocalName()
+				if name == "" {
+					name = "Unknown"
+				}
+				log.WithFields(log.Fields{"mac": mac, "name": name}).Debug("Found device during scan")
+			}
+			// Try connecting briefly to inspect services
+			if dev, err := adapter.Connect(scanResult.Address, bluetooth.ConnectionParams{}); err == nil {
+				// Discover services and look for the ESC/POS characteristic 49535343-...-29bb3
+				if svcs, err := dev.DiscoverServices(nil); err == nil {
+					for _, svc := range svcs {
+						if chars, err := svc.DiscoverCharacteristics(nil); err == nil {
+							for _, ch := range chars {
+								if strings.EqualFold(ch.UUID().String(), "49535343-8841-43f4-a8d4-ecbe34729bb3") {
+									// Found a candidate printer device
+									adapter.StopScan()
+									selectedDevice = dev
+									b.device = dev
+									b.writeChar = &ch
+									b.candidates = []*bluetooth.DeviceCharacteristic{&ch}
+									b.connected = true
+									b.address = strings.ToUpper(mac)
+									// cache as printer-capable
+									blePrinterCapabilityCache.mu.Lock()
+									blePrinterCapabilityCache.known[mac] = true
+									blePrinterCapabilityCache.mu.Unlock()
+									if b.verbose {
+										log.WithFields(log.Fields{"mac": mac, "uuid": ch.UUID().String()}).Info("Selected BLE printer (ESC/POS characteristic)")
+									}
+									return
+								}
+							}
+						}
+					}
+				}
+				// Not a printer; disconnect and continue scanning
+				_ = dev.Disconnect()
+				blePrinterCapabilityCache.mu.Lock()
+				blePrinterCapabilityCache.known[mac] = false
+				blePrinterCapabilityCache.mu.Unlock()
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("scan failed: %w", err)
+		}
+		if selectedDevice == nil {
+			return fmt.Errorf("no BLE printer exposing ESC/POS characteristic found nearby")
+		}
+		// If we preselected via characteristic, we can proceed without further discovery.
+		return nil
+	}
+
+	if b.verbose {
+		log.WithField("address", b.address).Debug("Scanning for target Bluetooth device...")
+	}
 	devicesFound := 0
 	targetFound := false
 	var targetAddress bluetooth.Address
@@ -96,16 +183,19 @@ func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluet
 
 		devicesFound++
 		deviceAddr := scanResult.Address.String()
-		deviceName := "Unknown"
-		if scanResult.LocalName() != "" {
-			deviceName = scanResult.LocalName()
+		if b.verbose {
+			deviceName := "Unknown"
+			if scanResult.LocalName() != "" {
+				deviceName = scanResult.LocalName()
+			}
+			log.WithFields(log.Fields{"mac": deviceAddr, "name": deviceName}).Debug("Found device during scan")
 		}
-
-		fmt.Printf("Found device: %s (%s)\n", deviceAddr, deviceName)
 
 		// Try both exact match and case-insensitive match
 		if deviceAddr == b.address || strings.EqualFold(deviceAddr, b.address) {
-			fmt.Printf("Target device found! Stopping scan and connecting...\n")
+			if b.verbose {
+				log.Debug("Target device found; stopping scan and connecting...")
+			}
 			targetFound = true
 			targetAddress = scanResult.Address
 			adapter.StopScan()
@@ -120,7 +210,9 @@ func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluet
 		return fmt.Errorf("scan completed but device %s not found (scanned %d devices)", b.address, devicesFound)
 	}
 
-	fmt.Printf("Attempting to connect to %s...\n", b.address)
+	if b.verbose {
+		log.WithField("address", b.address).Debug("Attempting to connect to device")
+	}
 
 	// Try to connect with a timeout
 	connectCtx, connectCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -143,14 +235,18 @@ func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluet
 		// Connection successful
 	}
 
-	fmt.Printf("Successfully connected to device %s\n", b.address)
+	if b.verbose {
+		log.WithField("address", b.address).Info("Connected to BLE device")
+	}
 	b.device = device
 	return b.setupCharacteristics()
 }
 
 // setupCharacteristics discovers services and sets up the write characteristic
 func (b *BluetoothConnection) setupCharacteristics() error {
-	fmt.Printf("Discovering services on device %s...\n", b.address)
+	if b.verbose {
+		log.WithField("address", b.address).Debug("Discovering services on device")
+	}
 
 	// Discover services
 	services, err := b.device.DiscoverServices(nil)
@@ -159,24 +255,32 @@ func (b *BluetoothConnection) setupCharacteristics() error {
 		return fmt.Errorf("device found but failed to discover services: %w", err)
 	}
 
-	fmt.Printf("Found %d services on device\n", len(services))
+	if b.verbose {
+		log.WithField("count", len(services)).Debug("Services discovered on device")
+	}
 
 	// Try each service to find a suitable characteristic
 	var allCharacteristics []bluetooth.DeviceCharacteristic
 
 	for i, svc := range services {
-		fmt.Printf("Service %d: %s\n", i+1, svc.UUID().String())
+		if b.verbose {
+			log.WithFields(log.Fields{"index": i + 1, "uuid": svc.UUID().String()}).Debug("Service")
+		}
 
 		// Discover characteristics for this service
 		chars, err := svc.DiscoverCharacteristics(nil)
 		if err != nil {
-			fmt.Printf("  Failed to discover characteristics: %v\n", err)
+			log.WithError(err).Debug("Failed to discover characteristics for service")
 			continue
 		}
 
-		fmt.Printf("  Found %d characteristics:\n", len(chars))
+		if b.verbose {
+			log.WithField("count", len(chars)).Debug("Characteristics discovered for service")
+		}
 		for j, char := range chars {
-			fmt.Printf("    Characteristic %d: %s\n", j+1, char.UUID().String())
+			if b.verbose {
+				log.WithFields(log.Fields{"index": j + 1, "uuid": char.UUID().String()}).Debug("Characteristic")
+			}
 			allCharacteristics = append(allCharacteristics, char)
 		}
 	}
@@ -190,7 +294,9 @@ func (b *BluetoothConnection) setupCharacteristics() error {
 		for i := range allCharacteristics {
 			char := &allCharacteristics[i]
 			if strings.EqualFold(char.UUID().String(), knownUUID) {
-				fmt.Printf("Found matching printer characteristic: %s\n", knownUUID)
+				if b.verbose {
+					log.WithField("uuid", knownUUID).Debug("Matched known printer characteristic")
+				}
 				candidates = append(candidates, char)
 			}
 		}
@@ -219,7 +325,9 @@ func (b *BluetoothConnection) setupCharacteristics() error {
 	b.candidates = candidates
 	b.connected = true
 
-	fmt.Printf("Successfully connected to device %s using characteristic %s\n", b.address, matchedUUID)
+	if b.verbose {
+		log.WithFields(log.Fields{"address": b.address, "uuid": matchedUUID}).Info("BLE printer characteristic selected")
+	}
 	return nil
 }
 
@@ -245,29 +353,41 @@ func (b *BluetoothConnection) Write(data []byte) (int, error) {
 		chunk := data[:chunkSize]
 		data = data[chunkSize:]
 
-		fmt.Printf("Writing %d bytes to characteristic...\n", len(chunk))
+		if b.verbose {
+			log.WithField("bytes", len(chunk)).Debug("Writing chunk to BLE characteristic")
+		}
 
 		// Try WriteWithoutResponse first, then fall back to regular Write
 		_, err := b.writeChar.WriteWithoutResponse(chunk)
 		if err != nil {
-			fmt.Printf("WriteWithoutResponse failed (%v), trying regular Write...\n", err)
+			if b.verbose {
+				log.WithError(err).Debug("WriteWithoutResponse failed; trying Write")
+			}
 			// Try regular Write method
 			if _, werr := b.writeChar.Write(chunk); werr != nil {
 				// If write not supported, try next candidate characteristic if available
 				// We match on error string due to tinygo API
 				if strings.Contains(strings.ToLower(werr.Error()), "write not supported") && len(b.candidates) > 1 {
-					fmt.Printf("Current characteristic %s rejected writes; trying alternate characteristic...\n", b.writeChar.UUID().String())
+					if b.verbose {
+						log.WithField("uuid", b.writeChar.UUID().String()).Debug("Characteristic rejected writes; trying alternate")
+					}
 					for idx := 1; idx < len(b.candidates); idx++ {
 						alt := b.candidates[idx]
-						fmt.Printf("Switching to characteristic %s...\n", alt.UUID().String())
+						if b.verbose {
+							log.WithField("uuid", alt.UUID().String()).Debug("Switching to alternate characteristic")
+						}
 						b.writeChar = alt
 						if _, aerr := b.writeChar.WriteWithoutResponse(chunk); aerr == nil {
-							fmt.Printf("Alternate characteristic WriteWithoutResponse succeeded for %d bytes\n", len(chunk))
+							if b.verbose {
+								log.WithField("bytes", len(chunk)).Debug("Alternate WriteWithoutResponse succeeded")
+							}
 							werr = nil
 							break
 						}
 						if _, aerr := b.writeChar.Write(chunk); aerr == nil {
-							fmt.Printf("Alternate characteristic Write succeeded for %d bytes\n", len(chunk))
+							if b.verbose {
+								log.WithField("bytes", len(chunk)).Debug("Alternate Write succeeded")
+							}
 							werr = nil
 							break
 						}
@@ -279,10 +399,14 @@ func (b *BluetoothConnection) Write(data []byte) (int, error) {
 					return totalWritten, fmt.Errorf("failed to write to characteristic (both WriteWithoutResponse and Write failed): %w", werr)
 				}
 			} else {
-				fmt.Printf("Regular Write succeeded for %d bytes\n", len(chunk))
+				if b.verbose {
+					log.WithField("bytes", len(chunk)).Debug("Write succeeded")
+				}
 			}
 		} else {
-			fmt.Printf("WriteWithoutResponse succeeded for %d bytes\n", len(chunk))
+			if b.verbose {
+				log.WithField("bytes", len(chunk)).Debug("WriteWithoutResponse succeeded")
+			}
 		}
 
 		totalWritten += chunkSize
@@ -293,7 +417,9 @@ func (b *BluetoothConnection) Write(data []byte) (int, error) {
 		}
 	}
 
-	fmt.Printf("Successfully wrote %d bytes total to printer\n", totalWritten)
+	if b.verbose {
+		log.WithField("bytes", totalWritten).Debug("Completed BLE write to printer")
+	}
 	return totalWritten, nil
 }
 

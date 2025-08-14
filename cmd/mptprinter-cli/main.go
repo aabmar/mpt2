@@ -7,15 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aabmar/mpt2/go/pkg/configstore"
 	"github.com/aabmar/mpt2/go/pkg/connections"
 	"github.com/aabmar/mpt2/go/pkg/escpos"
 	"github.com/aabmar/mpt2/go/pkg/printer"
+	log "github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 		connectionType = flag.String("type", "usb", "Connection type: usb or bluetooth")
 		usbVID         = flag.String("vid", "0483", "USB Vendor ID (hex)")
 		usbPID         = flag.String("pid", "5840", "USB Product ID (hex)")
-		btAddress      = flag.String("address", "", "Bluetooth MAC address (XX:XX:XX:XX:XX:XX)")
+		btAddress      = flag.String("address", "", "Bluetooth MAC address (XX:XX:XX:XX:XX:XX). If omitted for bluetooth, auto-scan for a compatible printer.")
 		text           = flag.String("text", "", "Text to print")
 		testReceipt    = flag.Bool("test", false, "Print a test receipt")
 		bold           = flag.Bool("bold", false, "Use bold text")
@@ -37,8 +38,10 @@ func main() {
 		fromStdin      = flag.Bool("stdin", false, "Read text from stdin instead of -text")
 		separator      = flag.String("separator", "", "Print a separator line with this character")
 		quiet          = flag.Bool("quiet", false, "Suppress log output")
+		verbose        = flag.Bool("verbose", false, "Enable verbose BLE logging (scan/services/characteristics)")
 		codepage       = flag.Int("codepage", -1, "ESC/POS code page number (e.g., 0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 		help           = flag.Bool("help", false, "Show help")
+		clearCache     = flag.Bool("clear-cache", false, "Clear cached device selection and exit")
 	)
 
 	flag.Parse()
@@ -48,9 +51,27 @@ func main() {
 		return
 	}
 
-	// Set up logging
+	// Handle cache clearing early and exit
+	if *clearCache {
+		if err := configstore.ClearLastDevice(); err != nil {
+			log.Fatalf("Failed to clear cache: %v", err)
+		}
+		log.Info("Device cache cleared.")
+		return
+	}
+
+	// Configure logging (logrus)
+	// -quiet: suppress all output
+	// -verbose: enable debug-level logs (BLE scan/services/characteristics)
 	if *quiet {
 		log.SetOutput(io.Discard)
+	} else {
+		log.SetFormatter(&log.TextFormatter{FullTimestamp: true})
+		if *verbose {
+			log.SetLevel(log.DebugLevel)
+		} else {
+			log.SetLevel(log.InfoLevel)
+		}
 	}
 
 	// Get text to print
@@ -70,67 +91,151 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create connection based on type
+	// Create connection based on type with cache and auto-detection & fallback
 	factory := connections.NewConnectionFactory()
-	var conn connections.Connection
-	var err error
+	var thermalPrinter *printer.ThermalPrinter
+	selectedType := strings.ToLower(*connectionType)
 
-	switch strings.ToLower(*connectionType) {
-	case "usb":
-		vid, err := parseHex(*usbVID)
-		if err != nil {
-			log.Fatalf("Invalid USB VID '%s': %v", *usbVID, err)
+	// Determine if -type flag was explicitly set
+	flagWasProvided := false
+	flag.CommandLine.Visit(func(f *flag.Flag) {
+		if f.Name == "type" {
+			flagWasProvided = true
 		}
-		pid, err := parseHex(*usbPID)
-		if err != nil {
-			log.Fatalf("Invalid USB PID '%s': %v", *usbPID, err)
-		}
+	})
 
-		params := connections.USBConnectionParams{
-			VendorID:  uint16(vid),
-			ProductID: uint16(pid),
-		}
-		conn, err = factory.CreateUSBConnection(params)
+	// Build candidate list
+	type candidate struct {
+		typ   string
+		build func() (connections.Connection, error)
+	}
+	var candidates []candidate
 
-	case "bluetooth", "ble":
-		if *btAddress == "" {
-			log.Fatal("Bluetooth address must be specified with -address")
+	if !flagWasProvided {
+		// 1) Cache (if present)
+		if last, cerr := configstore.LoadLastDevice(); cerr == nil && last != nil {
+			if last.Type == "usb" && last.USB != nil {
+				u := *last.USB
+				candidates = append(candidates, candidate{
+					typ: "usb",
+					build: func() (connections.Connection, error) {
+						return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: u.VendorID, ProductID: u.ProductID})
+					},
+				})
+			} else if last.Type == "bluetooth" && last.BLE != nil {
+				b := *last.BLE
+				candidates = append(candidates, candidate{
+					typ: "bluetooth",
+					build: func() (connections.Connection, error) {
+						return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: b.Address, Verbose: *verbose})
+					},
+				})
+			}
 		}
-
-		params := connections.BluetoothConnectionParams{
-			Address: *btAddress,
+		// 2) USB default (flags default to 0483:5840)
+		candidates = append(candidates, candidate{
+			typ: "usb",
+			build: func() (connections.Connection, error) {
+				vid, vErr := parseHex(*usbVID)
+				if vErr != nil {
+					return nil, vErr
+				}
+				pid, pErr := parseHex(*usbPID)
+				if pErr != nil {
+					return nil, pErr
+				}
+				return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: uint16(vid), ProductID: uint16(pid)})
+			},
+		})
+		// 3) BLE (address optional; auto-scan if empty)
+		candidates = append(candidates, candidate{
+			typ: "bluetooth",
+			build: func() (connections.Connection, error) {
+				return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: *btAddress, Verbose: *verbose})
+			},
+		})
+	} else {
+		// Respect explicit -type
+		switch selectedType {
+		case "usb":
+			candidates = append(candidates, candidate{
+				typ: "usb",
+				build: func() (connections.Connection, error) {
+					vid, vErr := parseHex(*usbVID)
+					if vErr != nil {
+						return nil, vErr
+					}
+					pid, pErr := parseHex(*usbPID)
+					if pErr != nil {
+						return nil, pErr
+					}
+					return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: uint16(vid), ProductID: uint16(pid)})
+				},
+			})
+		case "bluetooth", "ble":
+			candidates = append(candidates, candidate{
+				typ: "bluetooth",
+				build: func() (connections.Connection, error) {
+					return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: *btAddress, Verbose: *verbose})
+				},
+			})
+		default:
+			log.Fatalf("Unknown connection type: %s", *connectionType)
 		}
-		conn, err = factory.CreateBluetoothConnection(params)
-
-	default:
-		log.Fatalf("Unknown connection type: %s", *connectionType)
 	}
 
-	if err != nil {
-		log.Fatalf("Failed to create connection: %v", err)
+	// Try candidates in order until one connects
+	var connectErr error
+	for _, c := range candidates {
+		conn, berr := c.build()
+		if berr != nil {
+			log.WithError(berr).Debugf("Skipping %s candidate (build error)", c.typ)
+			connectErr = berr
+			continue
+		}
+		tp := printer.NewThermalPrinter(conn)
+		if *codepage >= 0 && *codepage <= 255 {
+			tp.SetCodePage(byte(*codepage))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		log.Infof("Connecting to printer via %s...", c.typ)
+		if err := tp.Connect(ctx); err != nil {
+			cancel()
+			log.WithError(err).Warnf("Connection via %s failed; trying next option", c.typ)
+			_ = conn.Close()
+			connectErr = err
+			continue
+		}
+		cancel()
+		thermalPrinter = tp
+		selectedType = c.typ
+		break
 	}
 
-	// Create printer instance
-	thermalPrinter := printer.NewThermalPrinter(conn)
-	if *codepage >= 0 && *codepage <= 255 {
-		thermalPrinter.SetCodePage(byte(*codepage))
-	}
-
-	// Connect to printer
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	log.Printf("Connecting to printer via %s...", *connectionType)
-	if err := thermalPrinter.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect to printer: %v", err)
+	if thermalPrinter == nil {
+		log.Fatalf("Failed to connect to any printer candidate: %v", connectErr)
 	}
 	defer thermalPrinter.Disconnect()
 
-	log.Println("Connected successfully!")
+	log.Info("Connected successfully!")
 
 	// Initialize printer
 	if err := thermalPrinter.Initialize(); err != nil {
 		log.Fatalf("Failed to initialize printer: %v", err)
+	}
+
+	// On successful connection, save cache
+	info := thermalPrinter.GetConnectionInfo()
+	if info.Type == "usb" {
+		_ = configstore.SaveLastDevice(&configstore.LastDevice{Type: "usb", USB: &configstore.USBInfo{VendorID: uint16FromProps(info.Properties["vendor_id"]), ProductID: uint16FromProps(info.Properties["product_id"])}})
+	} else if info.Type == "bluetooth" {
+		addr := ""
+		if v, ok := info.Properties["address"].(string); ok {
+			addr = v
+		} else {
+			addr = info.Address
+		}
+		_ = configstore.SaveLastDevice(&configstore.LastDevice{Type: "bluetooth", BLE: &configstore.BLEInfo{Address: strings.ToUpper(addr)}})
 	}
 
 	if *testReceipt {
@@ -138,7 +243,7 @@ func main() {
 		if err := printTestReceipt(thermalPrinter); err != nil {
 			log.Fatalf("Failed to print test receipt: %v", err)
 		}
-		log.Println("Test receipt printed successfully!")
+		log.Info("Test receipt printed successfully!")
 	} else {
 		// Print separator line if requested
 		if *separator != "" {
@@ -159,7 +264,7 @@ func main() {
 		}); err != nil {
 			log.Fatalf("Failed to print text: %v", err)
 		}
-		log.Println("Text printed successfully!")
+		log.Info("Text printed successfully!")
 	}
 }
 
@@ -316,6 +421,33 @@ func printTestReceipt(p *printer.ThermalPrinter) error {
 	return p.PrintReceipt(title, items, total, footer)
 }
 
+// uint16FromProps attempts to convert an interface{} to uint16 for vendor_id/product_id
+func uint16FromProps(v interface{}) uint16 {
+	switch t := v.(type) {
+	case uint16:
+		return t
+	case int:
+		return uint16(t)
+	case int32:
+		return uint16(t)
+	case int64:
+		return uint16(t)
+	case float64:
+		return uint16(t)
+	case string:
+		// try hex first
+		if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
+			if n, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(t), "0x"), 16, 16); err == nil {
+				return uint16(n)
+			}
+		}
+		if n, err := strconv.ParseUint(t, 10, 16); err == nil {
+			return uint16(n)
+		}
+	}
+	return 0
+}
+
 func showHelp() {
 	fmt.Println("MPT-II Thermal Printer CLI (Go Version)")
 	fmt.Println("")
@@ -361,6 +493,10 @@ func showHelp() {
 	fmt.Println("        Cut paper after printing")
 	fmt.Println("  -quiet")
 	fmt.Println("        Suppress log output")
+	fmt.Println("  -verbose")
+	fmt.Println("        Enable verbose BLE logging (scan/services/characteristics)")
+	fmt.Println("  -clear-cache")
+	fmt.Println("        Clear cached device selection and exit")
 	fmt.Println("  -codepage int")
 	fmt.Println("        ESC/POS code page (0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 	fmt.Println("")

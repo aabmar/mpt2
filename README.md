@@ -10,6 +10,7 @@ This directory contains a Go implementation of the MPT-II thermal printer driver
 - ✅ **Cross-platform** - Windows, macOS, Linux support
 - ✅ **Static Binary** - No runtime dependencies
 - ✅ **High Performance** - Native Go performance
+- ✅ **Structured Logging** - Uses logrus; -verbose for debug, -quiet to suppress
 - ✅ **Clean Architecture** - Modular, testable design
 
 ## Architecture
@@ -31,7 +32,7 @@ go/
 ## Prerequisites
 
 ### For USB Support:
-- **Windows**: libusb drivers (can use Zadig tool)
+- **Windows**: libusb drivers (can use Zadig tool, if you use MSYS install with pacman)
 - **Linux**: libusb-1.0-dev package
 - **macOS**: libusb (via Homebrew)
 
@@ -46,8 +47,8 @@ go/
 # Download dependencies
 go mod tidy
 
-# Build all tools using Makefile
-make            # builds mptprinter-cli, mptprint, mpt-markdown
+# Build all tools using Makefile (builds mptprinter-cli, mptprint, mpt-markdown)
+make            
 
 # Or build manually
 go build -o bin/mptprinter-cli ./cmd/mptprinter-cli  # Full-featured CLI
@@ -106,7 +107,7 @@ package main
 
 import (
     "context"
-    "log"
+    log "github.com/sirupsen/logrus"
     
     "github.com/aabmar/mpt2/go/pkg/connections"
     "github.com/aabmar/mpt2/go/pkg/printer"

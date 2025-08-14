@@ -4,9 +4,9 @@ package connections
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/google/gousb"
+	log "github.com/sirupsen/logrus"
 )
 
 // USBConnection implements Connection interface for USB printers
@@ -47,7 +47,7 @@ func (u *USBConnection) Connect(ctx context.Context) error {
 
 	// Set auto-detach kernel driver (Linux)
 	if err := u.device.SetAutoDetach(true); err != nil {
-		log.Printf("Warning: could not set auto-detach: %v", err)
+		log.WithError(err).Warn("Could not set USB auto-detach (kernel driver)")
 	}
 
 	// Claim the interface (usually interface 0)
@@ -65,7 +65,7 @@ func (u *USBConnection) Connect(ctx context.Context) error {
 	for epNum := 1; epNum <= 15; epNum++ {
 		endpoint, err = u.iface.OutEndpoint(epNum)
 		if err == nil {
-			log.Printf("Found OUT endpoint %d for USB printer", epNum)
+			log.WithField("endpoint", epNum).Debug("Found USB OUT endpoint")
 			break
 		}
 	}
@@ -78,7 +78,7 @@ func (u *USBConnection) Connect(ctx context.Context) error {
 	u.endpoint = endpoint
 
 	u.connected = true
-	log.Printf("Connected to USB printer %04x:%04x", u.vendorID, u.productID)
+	log.WithFields(log.Fields{"vid": fmt.Sprintf("%04x", u.vendorID), "pid": fmt.Sprintf("%04x", u.productID)}).Info("Connected to USB printer")
 
 	return nil
 }
@@ -131,7 +131,7 @@ func (u *USBConnection) Close() error {
 	}
 
 	u.connected = false
-	log.Println("USB connection closed")
+	log.Info("USB connection closed")
 
 	return nil
 }
