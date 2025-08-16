@@ -1,6 +1,12 @@
 # MPT-II Thermal Printer - Go Driver
 
-This directory contains a Go implementation of the MPT-II thermal printer driver, providing a fast, native alternative to the Python version.
+Did you buy a cheap thermal printer from AliExpress or Amazon? And now you want to use it with your own applications? Look no further! The MPT-II Go Driver provides a simple and efficient way to control your thermal printer from Go. 
+
+You can use this is a library, from command line, or via a simple browser-based interface.
+
+Vibe coded with GitHub Copilot Agent using Claude Sonnet 4.
+
+Use at your own risk.
 
 ## Features
 
@@ -12,6 +18,8 @@ This directory contains a Go implementation of the MPT-II thermal printer driver
 - ✅ **High Performance** - Native Go performance
 - ✅ **Structured Logging** - Uses logrus; -verbose for debug, -quiet to suppress
 - ✅ **Clean Architecture** - Modular, testable design
+- ✅ **Web Interface** - Built-in web server with GUI and REST API
+- ✅ **Markdown Support** - Rich text formatting for documents
 
 ## Architecture
 
@@ -24,7 +32,8 @@ go/
 ├── cmd/
 │   ├── mptprinter-cli/  # Full-featured command-line interface
 │   ├── mptprint/        # Simple print tool for basic usage
-│   └── mpt-markdown/    # Print Markdown files with simple formatting
+│   ├── mpt-markdown/    # Print Markdown files with simple formatting
+│   └── mpt-web/         # Web server with GUI and API for printing
 ├── bin/                 # Built executables (after running make)
 └── go.mod               # Go module definition
 ```
@@ -47,13 +56,14 @@ go/
 # Download dependencies
 go mod tidy
 
-# Build all tools using Makefile (builds mptprinter-cli, mptprint, mpt-markdown)
+# Build all tools using Makefile (builds mptprinter-cli, mptprint, mpt-markdown, mpt-web)
 make            
 
 # Or build manually
 go build -o bin/mptprinter-cli ./cmd/mptprinter-cli  # Full-featured CLI
 go build -o bin/mptprint ./cmd/mptprint              # Simple print tool
 go build -o bin/mpt-markdown ./cmd/mpt-markdown      # Markdown printer
+go build -o bin/mpt-web ./cmd/mpt-web                # Web server
 ```
 
 ## Usage
@@ -161,6 +171,46 @@ Supported Markdown subset:
 - Blockquotes (prefixed with | and underlined)
 - Code blocks (indented)
 - Links and images printed as text with URL
+
+### 🌐 Web Server (`mpt-web`)
+
+Provides a web interface and REST API for printing with Markdown support:
+
+```bash
+# Start web server on default port 8080
+./bin/mpt-web
+
+# Start on custom port with options
+./bin/mpt-web -port 3000 -width 42 -cut
+
+# Enable verbose logging
+./bin/mpt-web -verbose
+```
+
+**Web Interface Features:**
+- 📱 Responsive web GUI at `http://localhost:8080`
+- ✍️ Large text area with Markdown formatting guide
+- 🖨️ One-click printing with real-time feedback
+- 📖 Built-in help with supported Markdown syntax
+- ✅ Success/error messages with auto-hide
+
+**REST API:**
+```bash
+# Print via JSON API
+curl -X POST http://localhost:8080/api/print \
+  -H "Content-Type: application/json" \
+  -d '{"text":"# Hello World!\nThis is **bold** text."}'
+
+# API Response
+{"success": true, "message": "Successfully printed"}
+```
+
+**Server Features:**
+- 🔄 Persistent printer connection (no reconnection delays)
+- 🛡️ Thread-safe concurrent request handling
+- 🎯 Graceful shutdown with Ctrl+C
+- 📊 Structured logging with configurable levels
+- 🌐 Clickable localhost URLs in terminal output
 
 ## Library Comparison
 
