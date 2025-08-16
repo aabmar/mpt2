@@ -10,12 +10,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aabmar/mpt2/go/pkg/configstore"
-	"github.com/aabmar/mpt2/go/pkg/connections"
-	"github.com/aabmar/mpt2/go/pkg/escpos"
-	"github.com/aabmar/mpt2/go/pkg/printer"
+	"github.com/aabmar/mpt2/go/pkg/discovery"
+	"github.com/aabmar/mpt2/go/pkg/printing"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -91,12 +89,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create connection based on type with cache and auto-detection & fallback
-	factory := connections.NewConnectionFactory()
-	var thermalPrinter *printer.ThermalPrinter
-	selectedType := strings.ToLower(*connectionType)
+	// Create connection manager
+	manager := discovery.NewConnectionManager()
 
-	// Determine if -type flag was explicitly set
+	// Build connection options
+	opts := discovery.DefaultConnectOptions()
+	opts.Verbose = *verbose
+	opts.CodePage = *codepage
+
+	// Parse USB VID/PID if provided
+	if *usbVID != "" || *usbPID != "" {
+		vid, vErr := parseHex(*usbVID)
+		if vErr != nil {
+			log.Fatalf("Invalid USB Vendor ID: %v", vErr)
+		}
+		pid, pErr := parseHex(*usbPID)
+		if pErr != nil {
+			log.Fatalf("Invalid USB Product ID: %v", pErr)
+		}
+		opts.USBVendorID = uint16(vid)
+		opts.USBProductID = uint16(pid)
+	}
+
+	// Set Bluetooth address if provided
+	if *btAddress != "" {
+		opts.BluetoothAddress = *btAddress
+	}
+
+	// Determine connection type preference
 	flagWasProvided := false
 	flag.CommandLine.Visit(func(f *flag.Flag) {
 		if f.Name == "type" {
@@ -104,156 +124,37 @@ func main() {
 		}
 	})
 
-	// Build candidate list
-	type candidate struct {
-		typ   string
-		build func() (connections.Connection, error)
-	}
-	var candidates []candidate
-
-	if !flagWasProvided {
-		// 1) Cache (if present)
-		if last, cerr := configstore.LoadLastDevice(); cerr == nil && last != nil {
-			if last.Type == "usb" && last.USB != nil {
-				u := *last.USB
-				candidates = append(candidates, candidate{
-					typ: "usb",
-					build: func() (connections.Connection, error) {
-						return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: u.VendorID, ProductID: u.ProductID})
-					},
-				})
-			} else if last.Type == "bluetooth" && last.BLE != nil {
-				b := *last.BLE
-				candidates = append(candidates, candidate{
-					typ: "bluetooth",
-					build: func() (connections.Connection, error) {
-						return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: b.Address, Verbose: *verbose})
-					},
-				})
-			}
-		}
-		// 2) USB default (flags default to 0483:5840)
-		candidates = append(candidates, candidate{
-			typ: "usb",
-			build: func() (connections.Connection, error) {
-				vid, vErr := parseHex(*usbVID)
-				if vErr != nil {
-					return nil, vErr
-				}
-				pid, pErr := parseHex(*usbPID)
-				if pErr != nil {
-					return nil, pErr
-				}
-				return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: uint16(vid), ProductID: uint16(pid)})
-			},
-		})
-		// 3) BLE (address optional; auto-scan if empty)
-		candidates = append(candidates, candidate{
-			typ: "bluetooth",
-			build: func() (connections.Connection, error) {
-				return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: *btAddress, Verbose: *verbose})
-			},
-		})
+	if flagWasProvided {
+		opts.PreferredType = strings.ToLower(*connectionType)
+		opts.EnableFallback = false // Respect explicit type choice
 	} else {
-		// Respect explicit -type
-		switch selectedType {
-		case "usb":
-			candidates = append(candidates, candidate{
-				typ: "usb",
-				build: func() (connections.Connection, error) {
-					vid, vErr := parseHex(*usbVID)
-					if vErr != nil {
-						return nil, vErr
-					}
-					pid, pErr := parseHex(*usbPID)
-					if pErr != nil {
-						return nil, pErr
-					}
-					return factory.CreateUSBConnection(connections.USBConnectionParams{VendorID: uint16(vid), ProductID: uint16(pid)})
-				},
-			})
-		case "bluetooth", "ble":
-			candidates = append(candidates, candidate{
-				typ: "bluetooth",
-				build: func() (connections.Connection, error) {
-					return factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{Address: *btAddress, Verbose: *verbose})
-				},
-			})
-		default:
-			log.Fatalf("Unknown connection type: %s", *connectionType)
-		}
+		opts.PreferredType = "" // Auto-detect with fallback
+		opts.EnableFallback = true
 	}
 
-	// Try candidates in order until one connects
-	var connectErr error
-	for _, c := range candidates {
-		conn, berr := c.build()
-		if berr != nil {
-			log.WithError(berr).Debugf("Skipping %s candidate (build error)", c.typ)
-			connectErr = berr
-			continue
-		}
-		tp := printer.NewThermalPrinter(conn)
-		if *codepage >= 0 && *codepage <= 255 {
-			tp.SetCodePage(byte(*codepage))
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		log.Infof("Connecting to printer via %s...", c.typ)
-		if err := tp.Connect(ctx); err != nil {
-			cancel()
-			log.WithError(err).Warnf("Connection via %s failed; trying next option", c.typ)
-			_ = conn.Close()
-			connectErr = err
-			continue
-		}
-		cancel()
-		thermalPrinter = tp
-		selectedType = c.typ
-		break
-	}
-
-	if thermalPrinter == nil {
-		log.Fatalf("Failed to connect to any printer candidate: %v", connectErr)
+	// Connect to printer
+	thermalPrinter, err := manager.ConnectAuto(context.Background(), opts)
+	if err != nil {
+		log.Fatalf("Failed to connect to printer: %v", err)
 	}
 	defer thermalPrinter.Disconnect()
 
-	log.Info("Connected successfully!")
-
-	// Initialize printer
-	if err := thermalPrinter.Initialize(); err != nil {
-		log.Fatalf("Failed to initialize printer: %v", err)
-	}
-
-	// On successful connection, save cache
-	info := thermalPrinter.GetConnectionInfo()
-	if info.Type == "usb" {
-		_ = configstore.SaveLastDevice(&configstore.LastDevice{Type: "usb", USB: &configstore.USBInfo{VendorID: uint16FromProps(info.Properties["vendor_id"]), ProductID: uint16FromProps(info.Properties["product_id"])}})
-	} else if info.Type == "bluetooth" {
-		addr := ""
-		if v, ok := info.Properties["address"].(string); ok {
-			addr = v
-		} else {
-			addr = info.Address
-		}
-		_ = configstore.SaveLastDevice(&configstore.LastDevice{Type: "bluetooth", BLE: &configstore.BLEInfo{Address: strings.ToUpper(addr)}})
-	}
-
 	if *testReceipt {
 		// Print test receipt
-		if err := printTestReceipt(thermalPrinter); err != nil {
+		if err := printing.PrintTestReceipt(thermalPrinter); err != nil {
 			log.Fatalf("Failed to print test receipt: %v", err)
 		}
 		log.Info("Test receipt printed successfully!")
 	} else {
 		// Print separator line if requested
 		if *separator != "" {
-			if err := printSeparator(thermalPrinter, *separator); err != nil {
+			if err := printing.PrintSeparator(thermalPrinter, *separator, 32); err != nil {
 				log.Fatalf("Failed to print separator: %v", err)
 			}
 		}
 
 		// Print specified text
-		if err := printFormattedText(thermalPrinter, textToPrint, PrintOptions{
+		printOpts := printing.TextOptions{
 			Bold:         *bold,
 			Underline:    *underline,
 			DoubleWidth:  *doubleWidth,
@@ -261,7 +162,9 @@ func main() {
 			Align:        *align,
 			Lines:        *lines,
 			Cut:          *cut,
-		}); err != nil {
+		}
+
+		if err := printing.PrintFormattedText(thermalPrinter, textToPrint, printOpts); err != nil {
 			log.Fatalf("Failed to print text: %v", err)
 		}
 		log.Info("Text printed successfully!")
@@ -272,17 +175,6 @@ func parseHex(s string) (uint64, error) {
 	// Remove 0x prefix if present
 	s = strings.TrimPrefix(strings.ToLower(s), "0x")
 	return strconv.ParseUint(s, 16, 16)
-}
-
-// PrintOptions holds formatting options for text printing
-type PrintOptions struct {
-	Bold         bool
-	Underline    bool
-	DoubleWidth  bool
-	DoubleHeight bool
-	Align        string
-	Lines        int
-	Cut          bool
 }
 
 // readFromStdin reads all content from stdin
@@ -300,152 +192,6 @@ func readFromStdin() (string, error) {
 	}
 
 	return strings.TrimSuffix(content.String(), "\n"), nil
-}
-
-// printSeparator prints a separator line
-func printSeparator(p *printer.ThermalPrinter, char string) error {
-	if char == "" {
-		char = "-"
-	}
-	// Use first character only
-	if len(char) > 1 {
-		char = string(char[0])
-	}
-	return p.PrintLine("", char, 32)
-}
-
-// printFormattedText prints text with specified formatting options
-func printFormattedText(p *printer.ThermalPrinter, text string, opts PrintOptions) error {
-	// Set alignment
-	var align escpos.TextAlign
-	switch strings.ToLower(opts.Align) {
-	case "center":
-		align = escpos.AlignCenter
-	case "right":
-		align = escpos.AlignRight
-	default:
-		align = escpos.AlignLeft
-	}
-
-	if err := p.SetAlign(align); err != nil {
-		return err
-	}
-
-	// Apply formatting
-	if err := p.SetBold(opts.Bold); err != nil {
-		return err
-	}
-
-	if err := p.SetUnderline(opts.Underline); err != nil {
-		return err
-	}
-
-	if err := p.SetDoubleWidth(opts.DoubleWidth); err != nil {
-		return err
-	}
-
-	if err := p.SetDoubleHeight(opts.DoubleHeight); err != nil {
-		return err
-	}
-
-	// Print text line by line
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		if err := p.PrintText(line); err != nil {
-			return err
-		}
-	}
-
-	// Feed lines
-	if opts.Lines > 0 {
-		if err := p.Feed(opts.Lines); err != nil {
-			return err
-		}
-	}
-
-	// Cut paper if requested
-	if opts.Cut {
-		if err := p.Cut(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func printText(p *printer.ThermalPrinter, text string, bold bool, alignStr string) error {
-	// Set alignment
-	var align escpos.TextAlign
-	switch strings.ToLower(alignStr) {
-	case "center":
-		align = escpos.AlignCenter
-	case "right":
-		align = escpos.AlignRight
-	default:
-		align = escpos.AlignLeft
-	}
-
-	if err := p.SetAlign(align); err != nil {
-		return err
-	}
-
-	// Set bold if requested
-	if err := p.SetBold(bold); err != nil {
-		return err
-	}
-
-	// Print text
-	if err := p.PrintText(text); err != nil {
-		return err
-	}
-
-	// Feed some lines
-	return p.Feed(2)
-}
-
-func printTestReceipt(p *printer.ThermalPrinter) error {
-	title := "MPT-II GO DRIVER TEST"
-	items := []escpos.ReceiptItem{
-		{Name: "Item 1", Price: 10.00},
-		{Name: "Item 2", Price: 15.50},
-		{Name: "Item 3", Price: 7.25},
-	}
-
-	var total float64
-	for _, item := range items {
-		total += item.Price
-	}
-
-	footer := "Thank you for testing!"
-
-	return p.PrintReceipt(title, items, total, footer)
-}
-
-// uint16FromProps attempts to convert an interface{} to uint16 for vendor_id/product_id
-func uint16FromProps(v interface{}) uint16 {
-	switch t := v.(type) {
-	case uint16:
-		return t
-	case int:
-		return uint16(t)
-	case int32:
-		return uint16(t)
-	case int64:
-		return uint16(t)
-	case float64:
-		return uint16(t)
-	case string:
-		// try hex first
-		if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
-			if n, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(t), "0x"), 16, 16); err == nil {
-				return uint16(n)
-			}
-		}
-		if n, err := strconv.ParseUint(t, 10, 16); err == nil {
-			return uint16(n)
-		}
-	}
-	return 0
 }
 
 func showHelp() {

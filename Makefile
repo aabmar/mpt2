@@ -10,6 +10,7 @@ CLI := $(BIN_DIR)/mptprinter-cli$(EXE)
 PRINT := $(BIN_DIR)/mptprint$(EXE)
 MARKDOWN := $(BIN_DIR)/mpt-markdown$(EXE)
 BLESEARCH := $(BIN_DIR)/ble-search$(EXE)
+WEB := $(BIN_DIR)/mpt-web$(EXE)
 
 .PHONY: all clean help
 
@@ -23,10 +24,12 @@ help:
 	@echo "  ./bin/mptprint \"Hello, World!\"                    # Simple printing"
 	@echo "  ./bin/mptprinter-cli -text \"Hello\" -bold -center  # Advanced printing"
 	@echo "  ./bin/mpt-markdown README.md                 # Print Markdown file"
+	@echo "  ./bin/mpt-web                                # Start web server"
 	@echo "\nFor help:"
 	@echo "  ./bin/mptprinter-cli -help"
+	@echo "  ./bin/mpt-web -help"
 
-all: $(CLI) $(PRINT) $(MARKDOWN) $(BLESEARCH)
+all: $(CLI) $(PRINT) $(MARKDOWN) $(BLESEARCH) $(WEB)
 
 $(BIN_DIR):
 	@mkdir -p $(BIN_DIR)
@@ -50,6 +53,11 @@ $(BLESEARCH): $(BIN_DIR)
 	@echo "Building ble-search..."
 	go build -o $(BLESEARCH) ./cmd/ble-search
 	@echo "✓ ble-search built successfully"
+
+$(WEB): $(BIN_DIR)
+	@echo "Building mpt-web..."
+	go build -o $(WEB) ./cmd/mpt-web
+	@echo "✓ mpt-web built successfully"
 
 clean:
 	rm -rf $(BIN_DIR)
