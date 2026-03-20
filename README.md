@@ -1,6 +1,6 @@
 # MPT-II Thermal Printer - Go Driver
 
-Did you buy a cheap thermal printer from AliExpress or Amazon? And now you want to use it with your own applications? Look no further! The MPT-II Go Driver provides a simple and efficient way to control your thermal printer from Go. 
+Did you buy a cheap thermal printer from AliExpress or Amazon? And now you want to use it with your own applications? Look no further! The MPT-II Go Driver provides a simple and efficient way to control your thermal printer from Go.
 
 You can use this is a library, from command line, or via a simple browser-based interface.
 
@@ -10,8 +10,7 @@ Use at your own risk.
 
 ## Features
 
-- ✅ **USB Connection Support** - Using `gousb` library (libusb wrapper)
-- ✅ **Bluetooth LE Support** - Using `tinygo.org/x/bluetooth` library  
+- ✅ **Bluetooth LE Support** - Using `tinygo.org/x/bluetooth` library
 - ✅ **Complete ESC/POS Implementation** - All basic thermal printer commands
 - ✅ **Cross-platform** - Windows, macOS, Linux support
 - ✅ **Static Binary** - No runtime dependencies
@@ -27,7 +26,7 @@ Use at your own risk.
 go/
 ├── pkg/
 │   ├── escpos/          # ESC/POS command constants and utilities
-│   ├── connections/     # Connection interfaces (USB, Bluetooth)
+│   ├── connections/     # Connection interfaces (Bluetooth)
 │   └── printer/         # Core thermal printer logic
 ├── cmd/
 │   ├── mptprinter-cli/  # Full-featured command-line interface
@@ -39,11 +38,6 @@ go/
 ```
 
 ## Prerequisites
-
-### For USB Support:
-- **Windows**: libusb drivers (can use Zadig tool, if you use MSYS install with pacman)
-- **Linux**: libusb-1.0-dev package
-- **macOS**: libusb (via Homebrew)
 
 ### For Bluetooth Support:
 - **Windows**: Built-in Windows BLE support
@@ -57,7 +51,7 @@ go/
 go mod tidy
 
 # Build all tools using Makefile (builds mptprinter-cli, mptprint, mpt-markdown, mpt-web)
-make            
+make
 
 # Or build manually
 go build -o bin/mptprinter-cli ./cmd/mptprinter-cli  # Full-featured CLI
@@ -88,14 +82,14 @@ echo "Order completed at $(date)" | ./bin/mptprint
 For full control and formatting:
 
 ```bash
-# Print text via USB (default MPT-II VID:PID)
+# Print text with auto-discovery
 ./bin/mptprinter-cli -text "Hello from Go!"
 
-# Print test receipt via USB with custom VID:PID
-./bin/mptprinter-cli -vid 0483 -pid 5840 -test
+# Print test receipt
+./bin/mptprinter-cli -test
 
-# Print via Bluetooth LE
-./bin/mptprinter-cli -type bluetooth -address "XX:XX:XX:XX:XX:XX" -text "Hello BLE!"
+# Print via Bluetooth LE with specific address
+./bin/mptprinter-cli -address "XX:XX:XX:XX:XX:XX" -text "Hello BLE!"
 
 # Print bold, centered text with separator
 ./bin/mptprinter-cli -text "RECEIPT" -bold -align center -separator "=" -cut
@@ -118,33 +112,33 @@ package main
 import (
     "context"
     log "github.com/sirupsen/logrus"
-    
+
     "github.com/aabmar/mpt2/go/pkg/connections"
     "github.com/aabmar/mpt2/go/pkg/printer"
     "github.com/aabmar/mpt2/go/pkg/escpos"
 )
 
 func main() {
-    // Create USB connection
+    // Create Bluetooth LE connection
     factory := connections.NewConnectionFactory()
-    conn, err := factory.CreateUSBConnection(connections.USBConnectionParams{
-        VendorID:  0x0483,
-        ProductID: 0x5840,
+    conn, err := factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{
+        Address: "", // Empty for auto-scan
+        Verbose: false,
     })
     if err != nil {
         log.Fatal(err)
     }
-    
+
     // Create printer
     thermalPrinter := printer.NewThermalPrinter(conn)
-    
+
     // Connect and print
     ctx := context.Background()
     if err := thermalPrinter.Connect(ctx); err != nil {
         log.Fatal(err)
     }
     defer thermalPrinter.Disconnect()
-    
+
     // Print formatted text
     thermalPrinter.Initialize()
     thermalPrinter.SetAlign(escpos.AlignCenter)
@@ -225,7 +219,6 @@ curl -X POST http://localhost:8080/api/print \
 
 ## Dependencies
 
-- **USB**: `github.com/google/gousb` - Mature libusb wrapper
 - **Bluetooth**: `tinygo.org/x/bluetooth` - Cross-platform BLE library
 - **Standard Library**: Only Go standard library for core functionality
 
@@ -237,20 +230,13 @@ curl -X POST http://localhost:8080/api/print \
 
 ## Platform Support
 
-| Platform | USB | Bluetooth LE |
-|----------|-----|--------------|
-| **Windows** | ✅ | ✅ |
-| **macOS** | ✅ | ✅ |
-| **Linux** | ✅ | ✅ |
+| Platform | Bluetooth LE |
+|----------|--------------|
+| **Windows** | ✅ |
+| **macOS** | ✅ |
+| **Linux** | ✅ |
 
 ## Troubleshooting
-
-### USB Issues
-- Ensure libusb is installed
-- On Windows, use Zadig to install WinUSB driver
-- Run with administrator privileges if needed
-
-### Bluetooth Issues  
 - Ensure printer is in pairing/discoverable mode
 - Check Bluetooth is enabled on host system
 - Verify MAC address format (XX:XX:XX:XX:XX:XX)

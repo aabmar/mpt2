@@ -22,7 +22,7 @@ var blePrinterCapabilityCache = struct {
 type BluetoothConnection struct {
 	address   string
 	connected bool
-	device    *bluetooth.Device
+	device    bluetooth.Device
 	service   *bluetooth.DeviceService
 	writeChar *bluetooth.DeviceCharacteristic
 	// candidates holds all matched writable printer characteristics in priority order
@@ -132,7 +132,7 @@ func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluet
 								if strings.EqualFold(ch.UUID().String(), "49535343-8841-43f4-a8d4-ecbe34729bb3") {
 									// Found a candidate printer device
 									adapter.StopScan()
-									selectedDevice = dev
+									selectedDevice = &dev
 									b.device = dev
 									b.writeChar = &ch
 									b.candidates = []*bluetooth.DeviceCharacteristic{&ch}
@@ -227,9 +227,7 @@ func (b *BluetoothConnection) connectViaScan(ctx context.Context, adapter *bluet
 	// Check if context was cancelled during connection
 	select {
 	case <-connectCtx.Done():
-		if device != nil {
-			device.Disconnect()
-		}
+		device.Disconnect()
 		return fmt.Errorf("connection to device %s timed out", b.address)
 	default:
 		// Connection successful
@@ -428,10 +426,10 @@ func (b *BluetoothConnection) Close() error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	if b.device != nil && b.connected {
+	if b.connected {
 		err := b.device.Disconnect()
 		b.connected = false
-		b.device = nil
+		b.device = bluetooth.Device{}
 		b.service = nil
 		b.writeChar = nil
 		return err

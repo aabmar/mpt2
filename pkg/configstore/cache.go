@@ -11,15 +11,9 @@ import (
 
 // LastDevice represents the last successfully used device for quick reconnects.
 type LastDevice struct {
-	Type      string    `json:"type"` // "usb" or "bluetooth"
-	USB       *USBInfo  `json:"usb,omitempty"`
+	Type      string    `json:"type"` // "bluetooth"
 	BLE       *BLEInfo  `json:"ble,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type USBInfo struct {
-	VendorID  uint16 `json:"vendor_id"`
-	ProductID uint16 `json:"product_id"`
 }
 
 type BLEInfo struct {

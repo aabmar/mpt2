@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/aabmar/mpt2/go/pkg/configstore"
@@ -20,10 +19,7 @@ import (
 func main() {
 	// Define command-line flags
 	var (
-		connectionType = flag.String("type", "usb", "Connection type: usb or bluetooth")
-		usbVID         = flag.String("vid", "0483", "USB Vendor ID (hex)")
-		usbPID         = flag.String("pid", "5840", "USB Product ID (hex)")
-		btAddress      = flag.String("address", "", "Bluetooth MAC address (XX:XX:XX:XX:XX:XX). If omitted for bluetooth, auto-scan for a compatible printer.")
+		btAddress      = flag.String("address", "", "Bluetooth MAC address (XX:XX:XX:XX:XX:XX). If omitted, auto-scan for a compatible printer.")
 		text           = flag.String("text", "", "Text to print")
 		testReceipt    = flag.Bool("test", false, "Print a test receipt")
 		bold           = flag.Bool("bold", false, "Use bold text")
@@ -97,39 +93,9 @@ func main() {
 	opts.Verbose = *verbose
 	opts.CodePage = *codepage
 
-	// Parse USB VID/PID if provided
-	if *usbVID != "" || *usbPID != "" {
-		vid, vErr := parseHex(*usbVID)
-		if vErr != nil {
-			log.Fatalf("Invalid USB Vendor ID: %v", vErr)
-		}
-		pid, pErr := parseHex(*usbPID)
-		if pErr != nil {
-			log.Fatalf("Invalid USB Product ID: %v", pErr)
-		}
-		opts.USBVendorID = uint16(vid)
-		opts.USBProductID = uint16(pid)
-	}
-
 	// Set Bluetooth address if provided
 	if *btAddress != "" {
 		opts.BluetoothAddress = *btAddress
-	}
-
-	// Determine connection type preference
-	flagWasProvided := false
-	flag.CommandLine.Visit(func(f *flag.Flag) {
-		if f.Name == "type" {
-			flagWasProvided = true
-		}
-	})
-
-	if flagWasProvided {
-		opts.PreferredType = strings.ToLower(*connectionType)
-		opts.EnableFallback = false // Respect explicit type choice
-	} else {
-		opts.PreferredType = "" // Auto-detect with fallback
-		opts.EnableFallback = true
 	}
 
 	// Connect to printer
@@ -171,12 +137,6 @@ func main() {
 	}
 }
 
-func parseHex(s string) (uint64, error) {
-	// Remove 0x prefix if present
-	s = strings.TrimPrefix(strings.ToLower(s), "0x")
-	return strconv.ParseUint(s, 16, 16)
-}
-
 // readFromStdin reads all content from stdin
 func readFromStdin() (string, error) {
 	var content strings.Builder
@@ -201,14 +161,8 @@ func showHelp() {
 	fmt.Println("  mptprinter-cli [options]")
 	fmt.Println("")
 	fmt.Println("Connection Options:")
-	fmt.Println("  -type string")
-	fmt.Println("        Connection type: usb or bluetooth (default \"usb\")")
-	fmt.Println("  -vid string")
-	fmt.Println("        USB Vendor ID in hex (default \"0483\")")
-	fmt.Println("  -pid string")
-	fmt.Println("        USB Product ID in hex (default \"5840\")")
 	fmt.Println("  -address string")
-	fmt.Println("        Bluetooth MAC address (XX:XX:XX:XX:XX:XX)")
+	fmt.Println("        Bluetooth MAC address (XX:XX:XX:XX:XX:XX). If omitted, auto-scan.")
 	fmt.Println("")
 	fmt.Println("Print Options:")
 	fmt.Println("  -text string")
@@ -247,14 +201,14 @@ func showHelp() {
 	fmt.Println("        ESC/POS code page (0=PC437,2=PC850,5=PC865,16=WPC1252,19=PC858)")
 	fmt.Println("")
 	fmt.Println("Examples:")
-	fmt.Println("  # Print simple text via USB")
+	fmt.Println("  # Print simple text (auto-scan for printer)")
 	fmt.Println("  mptprinter-cli -text \"Hello, World!\"")
 	fmt.Println("")
 	fmt.Println("  # Print from stdin with formatting")
-	fmt.Println("  echo \"Hello from stdin\" | mptprinter-cli -stdin -bold -center")
+	fmt.Println("  echo \"Hello from stdin\" | mptprinter-cli -stdin -bold -align center")
 	fmt.Println("")
 	fmt.Println("  # Print test receipt via Bluetooth")
-	fmt.Println("  mptprinter-cli -type bluetooth -address XX:XX:XX:XX:XX:XX -test")
+	fmt.Println("  mptprinter-cli -address XX:XX:XX:XX:XX:XX -test")
 	fmt.Println("")
 	fmt.Println("  # Print bold, centered title with separator and cut")
 	fmt.Println("  mptprinter-cli -text \"RECEIPT\" -bold -align center -separator \"=\" -cut")

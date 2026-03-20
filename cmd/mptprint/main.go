@@ -24,7 +24,7 @@ func main() {
 		fmt.Println("Usage: mptprint \"text to print\"")
 		fmt.Println("       echo \"text\" | mptprint")
 		fmt.Println("")
-		fmt.Println("Simple thermal printer tool. Uses default USB connection (VID:0483 PID:5840)")
+		fmt.Println("Simple thermal printer tool. Uses Bluetooth LE auto-discovery")
 		fmt.Println("For advanced options, use: mptprinter-cli")
 		os.Exit(1)
 	}
@@ -37,14 +37,14 @@ func main() {
 		textToPrint = os.Args[1]
 	}
 
-	// Use default USB connection (MPT-II)
+	// Use Bluetooth LE connection with auto-discovery
 	factory := connections.NewConnectionFactory()
-	conn, err := factory.CreateUSBConnection(connections.USBConnectionParams{
-		VendorID:  0x0483,
-		ProductID: 0x5840,
+	conn, err := factory.CreateBluetoothConnection(connections.BluetoothConnectionParams{
+		Address: "", // Auto-scan
+		Verbose: false,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: Failed to create USB connection: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: Failed to create Bluetooth connection: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -60,7 +60,7 @@ func main() {
 
 	if err := thermalPrinter.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to connect to printer: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure your MPT-II printer is connected via USB\n")
+		fmt.Fprintf(os.Stderr, "Make sure your thermal printer is powered on and Bluetooth is enabled\n")
 		os.Exit(1)
 	}
 	defer thermalPrinter.Disconnect()

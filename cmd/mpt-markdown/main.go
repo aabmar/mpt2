@@ -20,7 +20,7 @@ type Options struct {
 }
 
 func main() {
-	// Flags kept minimal; default to USB like mptprint
+	// Flags kept minimal; all use Bluetooth auto-discovery
 	width := flag.Int("width", 32, "Line width in characters (e.g., 32 for 58mm)")
 	feed := flag.Int("feed", 2, "Number of lines to feed after printing")
 	cut := flag.Bool("cut", false, "Cut paper after printing")
@@ -40,10 +40,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Connect via USB using the discovery manager
+	// Connect via Bluetooth using the discovery manager
 	manager := discovery.NewConnectionManager()
-	
-	p, err := manager.ConnectUSB(context.Background(), 0x0483, 0x5840, *codepage)
+
+	p, err := manager.ConnectBluetooth(context.Background(), "", false, *codepage)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to connect to printer: %v\n", err)
 		os.Exit(1)
@@ -56,7 +56,7 @@ func main() {
 		FeedLines: *feed,
 		Cut:       *cut,
 	}
-	
+
 	if err := printing.PrintMarkdown(p, string(data), markdownOpts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

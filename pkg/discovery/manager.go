@@ -4,7 +4,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,16 +28,12 @@ func NewConnectionManager() *ConnectionManager {
 // ConnectOptions configures how to connect to a printer
 type ConnectOptions struct {
 	// Connection preferences
-	PreferredType    string // "usb", "bluetooth", or "" for auto
-	USBVendorID      uint16
-	USBProductID     uint16
 	BluetoothAddress string
 
 	// Behavior options
-	UseCache       bool // Try cached device first
-	EnableFallback bool // Try other connection types if preferred fails
-	Verbose        bool // Enable verbose logging
-	Timeout        time.Duration
+	UseCache bool // Try cached device first
+	Verbose  bool // Enable verbose logging
+	Timeout  time.Duration
 
 	// Printer options
 	CodePage int // ESC/POS code page (-1 for default)
@@ -47,12 +42,8 @@ type ConnectOptions struct {
 // DefaultConnectOptions returns sensible defaults
 func DefaultConnectOptions() ConnectOptions {
 	return ConnectOptions{
-		PreferredType:    "",     // Auto-detect
-		USBVendorID:      0x0483, // MPT-II default
-		USBProductID:     0x5840, // MPT-II default
-		BluetoothAddress: "",     // Auto-scan
+		BluetoothAddress: "", // Auto-scan
 		UseCache:         true,
-		EnableFallback:   true,
 		Verbose:          false,
 		Timeout:          30 * time.Second,
 		CodePage:         -1,
@@ -140,28 +131,15 @@ type ConnectionCandidate struct {
 func (m *ConnectionManager) buildCandidates(opts ConnectOptions) ([]ConnectionCandidate, error) {
 	var candidates []ConnectionCandidate
 
-	// 1. Cache first (if enabled and no specific type preference)
-	if opts.UseCache && opts.PreferredType == "" {
+	// 1. Cache first (if enabled)
+	if opts.UseCache {
 		if cacheCandidate := m.buildCacheCandidate(opts); cacheCandidate != nil {
 			candidates = append(candidates, *cacheCandidate)
 		}
 	}
 
-	// 2. Preferred type (if specified)
-	if opts.PreferredType != "" {
-		switch strings.ToLower(opts.PreferredType) {
-		case "usb":
-			candidates = append(candidates, m.buildUSBCandidate(opts))
-		case "bluetooth", "ble":
-			candidates = append(candidates, m.buildBluetoothCandidate(opts))
-		default:
-			return nil, fmt.Errorf("unknown connection type: %s", opts.PreferredType)
-		}
-	} else if opts.EnableFallback {
-		// 3. Default fallback order: USB first, then Bluetooth
-		candidates = append(candidates, m.buildUSBCandidate(opts))
-		candidates = append(candidates, m.buildBluetoothCandidate(opts))
-	}
+	// 2. Bluetooth connection
+	candidates = append(candidates, m.buildBluetoothCandidate(opts))
 
 	return candidates, nil
 }
@@ -174,20 +152,6 @@ func (m *ConnectionManager) buildCacheCandidate(opts ConnectOptions) *Connection
 			log.WithError(err).Debug("No cached device found")
 		}
 		return nil
-	}
-
-	if last.Type == "usb" && last.USB != nil {
-		usb := *last.USB
-		return &ConnectionCandidate{
-			Type:        "usb",
-			Description: fmt.Sprintf("cached USB device %04x:%04x", usb.VendorID, usb.ProductID),
-			Connect: func() (connections.Connection, error) {
-				return m.factory.CreateUSBConnection(connections.USBConnectionParams{
-					VendorID:  usb.VendorID,
-					ProductID: usb.ProductID,
-				})
-			},
-		}
 	}
 
 	if last.Type == "bluetooth" && last.BLE != nil {
@@ -205,20 +169,6 @@ func (m *ConnectionManager) buildCacheCandidate(opts ConnectOptions) *Connection
 	}
 
 	return nil
-}
-
-// buildUSBCandidate creates a USB connection candidate
-func (m *ConnectionManager) buildUSBCandidate(opts ConnectOptions) ConnectionCandidate {
-	return ConnectionCandidate{
-		Type:        "usb",
-		Description: fmt.Sprintf("USB device %04x:%04x", opts.USBVendorID, opts.USBProductID),
-		Connect: func() (connections.Connection, error) {
-			return m.factory.CreateUSBConnection(connections.USBConnectionParams{
-				VendorID:  opts.USBVendorID,
-				ProductID: opts.USBProductID,
-			})
-		},
-	}
 }
 
 // buildBluetoothCandidate creates a Bluetooth connection candidate
@@ -244,18 +194,7 @@ func (m *ConnectionManager) buildBluetoothCandidate(opts ConnectOptions) Connect
 func (m *ConnectionManager) saveToCache(printer *printer.ThermalPrinter, connType string, opts ConnectOptions) {
 	info := printer.GetConnectionInfo()
 
-	if info.Type == "usb" {
-		usbInfo := &configstore.LastDevice{
-			Type: "usb",
-			USB: &configstore.USBInfo{
-				VendorID:  uint16FromProps(info.Properties["vendor_id"]),
-				ProductID: uint16FromProps(info.Properties["product_id"]),
-			},
-		}
-		if err := configstore.SaveLastDevice(usbInfo); err != nil && opts.Verbose {
-			log.WithError(err).Debug("Failed to save USB device to cache")
-		}
-	} else if info.Type == "bluetooth" {
+	if info.Type == "bluetooth" {
 		addr := ""
 		if v, ok := info.Properties["address"].(string); ok {
 			addr = v
@@ -275,55 +214,11 @@ func (m *ConnectionManager) saveToCache(printer *printer.ThermalPrinter, connTyp
 	}
 }
 
-// uint16FromProps converts interface{} to uint16 for VID/PID
-func uint16FromProps(v interface{}) uint16 {
-	switch t := v.(type) {
-	case uint16:
-		return t
-	case int:
-		return uint16(t)
-	case int32:
-		return uint16(t)
-	case int64:
-		return uint16(t)
-	case float64:
-		return uint16(t)
-	case string:
-		// Try hex first
-		if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
-			if n, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(t), "0x"), 16, 16); err == nil {
-				return uint16(n)
-			}
-		}
-		if n, err := strconv.ParseUint(t, 10, 16); err == nil {
-			return uint16(n)
-		}
-	}
-	return 0
-}
-
-// ConnectUSB is a convenience method for direct USB connection
-func (m *ConnectionManager) ConnectUSB(ctx context.Context, vendorID, productID uint16, codePage int) (*printer.ThermalPrinter, error) {
-	opts := ConnectOptions{
-		PreferredType:  "usb",
-		USBVendorID:    vendorID,
-		USBProductID:   productID,
-		UseCache:       false,
-		EnableFallback: false,
-		Timeout:        15 * time.Second,
-		CodePage:       codePage,
-	}
-
-	return m.ConnectAuto(ctx, opts)
-}
-
 // ConnectBluetooth is a convenience method for direct Bluetooth connection
 func (m *ConnectionManager) ConnectBluetooth(ctx context.Context, address string, verbose bool, codePage int) (*printer.ThermalPrinter, error) {
 	opts := ConnectOptions{
-		PreferredType:    "bluetooth",
 		BluetoothAddress: address,
 		UseCache:         false,
-		EnableFallback:   false,
 		Verbose:          verbose,
 		Timeout:          30 * time.Second,
 		CodePage:         codePage,

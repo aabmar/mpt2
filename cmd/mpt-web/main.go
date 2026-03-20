@@ -126,7 +126,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>🖨️ MPT Thermal Printer</h1>
-        
+
         <div class="info">
             <h3>How to use:</h3>
             <p>Enter your text below using Markdown formatting. Supported features include:</p>
@@ -158,7 +158,7 @@ This is **bold** text and this is *italic*.
 > This is a quote
 
 ` + "`code example`" + `"></textarea>
-            
+
             <div class="button-container">
                 <button type="submit" id="printButton">🖨️ Print</button>
             </div>
@@ -170,19 +170,19 @@ This is **bold** text and this is *italic*.
     <script>
         document.getElementById('printForm').addEventListener('submit', async function(e) {
             e.preventDefault();
-            
+
             const textContent = document.getElementById('textContent').value;
             const button = document.getElementById('printButton');
             const messageDiv = document.getElementById('message');
-            
+
             if (!textContent.trim()) {
                 showMessage('Please enter some text to print.', 'error');
                 return;
             }
-            
+
             button.disabled = true;
             button.textContent = '🖨️ Printing...';
-            
+
             try {
                 const response = await fetch('/api/print', {
                     method: 'POST',
@@ -191,9 +191,9 @@ This is **bold** text and this is *italic*.
                     },
                     body: JSON.stringify({ text: textContent })
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (response.ok && result.success) {
                     showMessage('✅ Successfully printed!', 'success');
                 } else {
@@ -206,13 +206,13 @@ This is **bold** text and this is *italic*.
                 button.textContent = '🖨️ Print';
             }
         });
-        
+
         function showMessage(text, type) {
             const messageDiv = document.getElementById('message');
             messageDiv.textContent = text;
             messageDiv.className = 'message ' + type;
             messageDiv.style.display = 'block';
-            
+
             setTimeout(() => {
                 messageDiv.style.display = 'none';
             }, 5000);
@@ -253,10 +253,10 @@ func main() {
 	// Initialize connection manager
 	manager = discovery.NewConnectionManager()
 
-	// Connect to printer once at startup
+	// Connect to printer once at startup using auto-discovery (Bluetooth)
 	logrus.Info("Connecting to printer at startup...")
 	var err error
-	thermalPrinter, err = manager.ConnectUSB(context.Background(), 0x0483, 0x5840, *codepage)
+	thermalPrinter, err = manager.ConnectBluetooth(context.Background(), "", *verbose, *codepage)
 	if err != nil {
 		logrus.Fatalf("Failed to connect to printer at startup: %v", err)
 	}
