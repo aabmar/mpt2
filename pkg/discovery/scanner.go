@@ -13,6 +13,8 @@ import (
 	"tinygo.org/x/bluetooth"
 )
 
+const unnamedDeviceName = "(no name)"
+
 // DeviceInfo represents a discovered device
 type DeviceInfo struct {
 	Address     string
@@ -85,64 +87,60 @@ func (s *BluetoothScanner) Scan(ctx context.Context, opts ScanOptions) ([]Device
 				}
 			}
 		}()
+
+		defer func() {
+			close(progressDone)
+			progressTicker.Stop()
+		}()
 	}
 
-	// Start scanning
+	stopScan := make(chan struct{})
+	timer := time.NewTimer(opts.Timeout)
+	defer timer.Stop()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		case <-stopScan:
+			return
+		}
+		_ = s.adapter.StopScan()
+	}()
+
+	// Start scanning. Scan blocks until StopScan is called.
 	if err := s.adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
 		addr := result.Address.String()
-		name := result.LocalName()
-		if name == "" {
-			name = "(no name)"
-		}
-
-		// Check for duplicates
-		if !opts.ShowDuplicates {
-			mu.RLock()
-			_, exists := seen[addr]
-			mu.RUnlock()
-			if exists {
-				return
-			}
-		}
-
-		device := DeviceInfo{
-			Address:     addr,
-			Name:        name,
-			RSSI:        result.RSSI,
-			Type:        "bluetooth",
-			Connectable: true, // Assume connectable for now
-		}
+		name := strings.TrimSpace(result.LocalName())
 
 		mu.Lock()
+		existing, exists := seen[addr]
+		device := mergeScanResult(existing, addr, name, result.RSSI, exists)
 		seen[addr] = device
 		mu.Unlock()
 
+		if !opts.ShowDuplicates && exists {
+			return
+		}
+
 		if opts.ShowDuplicates {
 			if opts.ShowRSSI {
-				log.Infof("%s\t%s\t(RSSI %d)", addr, name, result.RSSI)
+				log.Infof("%s\t%s\t(RSSI %d)", addr, displayDeviceName(name), result.RSSI)
 			} else {
-				log.Infof("%s\t%s", addr, name)
+				log.Infof("%s\t%s", addr, displayDeviceName(name))
 			}
 		}
 	}); err != nil {
+		close(stopScan)
 		return nil, fmt.Errorf("scan failed: %w", err)
 	}
+	close(stopScan)
 
-	// Wait for timeout or context cancellation
-	select {
-	case <-time.After(opts.Timeout):
-		// Normal timeout
-	case <-ctx.Done():
-		// Context cancelled
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	// Stop scanning and cleanup
-	s.adapter.StopScan()
-
 	if opts.ShowProgress {
-		close(progressDone)
-		progressTicker.Stop()
-
 		mu.RLock()
 		total := len(seen)
 		mu.RUnlock()
@@ -173,6 +171,34 @@ func (s *BluetoothScanner) Scan(ctx context.Context, opts ScanOptions) ([]Device
 	}
 
 	return devices, nil
+}
+
+func mergeScanResult(existing DeviceInfo, addr, name string, rssi int16, exists bool) DeviceInfo {
+	if !exists {
+		return DeviceInfo{
+			Address:     addr,
+			Name:        displayDeviceName(name),
+			RSSI:        rssi,
+			Type:        "bluetooth",
+			Connectable: true, // Assume connectable for now
+		}
+	}
+
+	if name != "" && (existing.Name == "" || existing.Name == unnamedDeviceName) {
+		existing.Name = name
+	}
+	if rssi > existing.RSSI {
+		existing.RSSI = rssi
+	}
+
+	return existing
+}
+
+func displayDeviceName(name string) string {
+	if name == "" {
+		return unnamedDeviceName
+	}
+	return name
 }
 
 // FindPrinters scans for devices that look like thermal printers

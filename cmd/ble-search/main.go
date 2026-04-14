@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"tinygo.org/x/bluetooth"
 )
+
+const unnamedDeviceName = "(no name)"
 
 func main() {
 	timeout := flag.Duration("timeout", 8*time.Second, "scan duration, e.g. 5s, 10s")
@@ -37,43 +40,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Starting BLE scan for %s...\n", timeout.String())
 	}
 
-	if err := adapter.Scan(func(a *bluetooth.Adapter, result bluetooth.ScanResult) {
-		addr := result.Address.String()
-		name := result.LocalName()
-		if name == "" {
-			name = "(no name)"
-		}
-		if !*duplicates {
-			mu.RLock()
-			_, ok := seen[addr]
-			mu.RUnlock()
-			if ok {
-				return
-			}
-		}
-		entry := info{addr: addr, name: name, rssi: result.RSSI}
-
-		// if result.HasServiceUUID() {
-		// 	// If the device has a service UUID, we can use it to filter or identify devices.
-		// 	// For now, we just print it.
-		// 	fmt.Printf("Has our service UUID: %s\n", result.HasServiceUUID(XXX));
-		// }
-
-		mu.Lock()
-		seen[addr] = entry
-		mu.Unlock()
-
-		if *showRSSI {
-			fmt.Printf("%s\t%s\t(RSSI %d)\n", addr, name, result.RSSI)
-		} else {
-			fmt.Printf("%s\t%s\n", addr, name)
-		}
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting scan: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Let it scan for the requested duration
 	start := time.Now()
 	var ticker *time.Ticker
 	done := make(chan struct{})
@@ -95,8 +61,64 @@ func main() {
 			}
 		}()
 	}
-	time.Sleep(*timeout)
-	_ = adapter.StopScan()
+
+	stopScan := make(chan struct{})
+	timer := time.NewTimer(*timeout)
+	defer timer.Stop()
+
+	go func() {
+		select {
+		case <-timer.C:
+		case <-stopScan:
+			return
+		}
+		_ = adapter.StopScan()
+	}()
+
+	if err := adapter.Scan(func(a *bluetooth.Adapter, result bluetooth.ScanResult) {
+		addr := result.Address.String()
+		name := strings.TrimSpace(result.LocalName())
+
+		mu.Lock()
+		entry, ok := seen[addr]
+		if ok {
+			if name != "" && (entry.name == "" || entry.name == unnamedDeviceName) {
+				entry.name = name
+			}
+			if result.RSSI > entry.rssi {
+				entry.rssi = result.RSSI
+			}
+		} else {
+			entry = info{addr: addr, name: displayName(name), rssi: result.RSSI}
+		}
+		seen[addr] = entry
+		mu.Unlock()
+
+		if !*duplicates && ok {
+			return
+		}
+
+		// if result.HasServiceUUID() {
+		// 	// If the device has a service UUID, we can use it to filter or identify devices.
+		// 	// For now, we just print it.
+		// 	fmt.Printf("Has our service UUID: %s\n", result.HasServiceUUID(XXX));
+		// }
+
+		if *showRSSI {
+			fmt.Printf("%s\t%s\t(RSSI %d)\n", addr, displayName(name), result.RSSI)
+		} else {
+			fmt.Printf("%s\t%s\n", addr, displayName(name))
+		}
+	}); err != nil {
+		close(stopScan)
+		if *progress {
+			close(done)
+			ticker.Stop()
+		}
+		fmt.Fprintf(os.Stderr, "Error starting scan: %v\n", err)
+		os.Exit(1)
+	}
+	close(stopScan)
 	if *progress {
 		close(done)
 		ticker.Stop()
@@ -127,4 +149,11 @@ func main() {
 			}
 		}
 	}
+}
+
+func displayName(name string) string {
+	if name == "" {
+		return unnamedDeviceName
+	}
+	return name
 }
